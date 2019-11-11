@@ -84,6 +84,8 @@ void setup()
   unsigned long endTime = millis();
   triggerTime = endTime + delayTime; // set the next trigger time
   startTime = endTime;
+  // This seems to CRASH it!!
+ // digitalWrite(LED_BUILTIN, HIGH);   // turn the LED on (HIGH is the voltage level)
 }
 
 // Call tick on every change interrupt
@@ -151,6 +153,7 @@ void setAlarm(int clicks)
     Serial.print(":");
     Serial.println(alarmMinute);
   }
+  alarm_seven_segment_display(alarmHour, alarmMinute);
 }
 
 void loop()
@@ -158,7 +161,7 @@ void loop()
   signed char pos = encoder.getPosition();
 
   setAlarm(pos);
-  alarm_seven_segment_display(alarmHour, alarmMinute);
+  
 
   unsigned long endTime = millis();
   if (endTime < startTime)
@@ -179,8 +182,11 @@ void loop()
 
 void check_alarm(int hour, int minute){
   if(hour==alarmHour){
-    if(minute==alarmMinute){
-    digitalWrite(led, false); //toggle the on-board led
+    if(minute==alarmMinute||minute==alarmMinute+1||minute==alarmMinute+2||minute==alarmMinute+3||minute==alarmMinute+4){
+    digitalWrite(led, LOW); //toggle the on-board led
+     Serial.print("Alarm is sounding ");
+    }else{
+      digitalWrite(led, HIGH); //toggle the on-board led
     }
   }
 
@@ -201,15 +207,13 @@ void connect_to_wifi()
   }
 }
 
+
+bool colon=false;
 void clock_seven_segment_display()
 {
   
   clockDisplay.setBrightness(0x0f);
-  int colon = 0;
-  if (digitalRead(led))
-  {
-    colon = 0xff;
-  }
+  colon=!colon;
 
   if (isWifiConnected())
   {
@@ -227,7 +231,7 @@ void clock_seven_segment_display()
     // Serial.println(timeClient.getSeconds());
     // Serial.println(timeClient.getFormattedTime());
   
-    clockDisplay.showNumberDecEx(((hour * 100) + minutes), colon, true);
+    clockDisplay.showNumberDecEx(((hour * 100) + minutes), colon ? 0xff : 0x00, true);
   }
   else
   {
