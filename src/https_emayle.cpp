@@ -14,9 +14,9 @@
 #include <EncoderStepCounter.h>
 #include "wifi_credentials.h"
 
-#define ENCODER_PIN1 D6
+#define ENCODER_PIN1 D7
 #define ENCODER_INT1 digitalPinToInterrupt(ENCODER_PIN1)
-#define ENCODER_PIN2 D7
+#define ENCODER_PIN2 D6
 #define ENCODER_INT2 digitalPinToInterrupt(ENCODER_PIN2)
 
 // Create instance for one full step encoder
@@ -43,7 +43,7 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 
 const uint8_t SEG_DONE[] = {
     SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F, // O
-    SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F, // O
+    SEG_D | SEG_E | SEG_F | SEG_G,                 // F
     SEG_D | SEG_E | SEG_F | SEG_G,                 // F
     0                                              //
 };
@@ -54,16 +54,21 @@ const uint8_t SEG_DASH[] = {
     SEG_G,
     SEG_G};
 
-TM1637Display display(CLK, D3);
-TM1637Display display2(CLK, D5);
+TM1637Display clockDisplay(CLK, D3);
+TM1637Display alarmDisplay(CLK, D5);
 
 void connect_to_wifi();
-void seven_segment_display();
-void seven_segment_display2();
+
 void clock_seven_segment_display();
+void alarm_seven_segment_display(uint hour, uint minute);
+void setAlarm(int clicks);
+bool isWifiConnected();
+void check_alarm(int hour, int minute);
 ICACHE_RAM_ATTR void interrupt();
 
-bool connected = false;
+unsigned long startTime = 0;
+unsigned long delayTime = 1000; // delay of 1000mS
+unsigned long triggerTime;
 
 void setup()
 {
@@ -76,6 +81,9 @@ void setup()
   delay(10);
   pinMode(led, OUTPUT);
   connect_to_wifi();
+  unsigned long endTime = millis();
+  triggerTime = endTime + delayTime; // set the next trigger time
+  startTime = endTime;
 }
 
 // Call tick on every change interrupt
@@ -84,23 +92,98 @@ ICACHE_RAM_ATTR void interrupt()
   encoder.tick();
 }
 
-// This is an example on how to change a "long" variable
-// with the library. With every loop the value is added
-// and then cleared in the encoder library
-signed long position = 0;
+
+
+
+int alarmHour = 7;
+int alarmMinute = 0;
+ulong lastAlarmUpdate;
+
+void setAlarm(int clicks)
+{
+  if (clicks != 0)
+  {
+    ulong update = millis();
+
+    if (lastAlarmUpdate + 25 > update)
+    {
+      // less than 25mS since the last update speed up the change
+      clicks *= 15;
+    }
+    else
+    {
+      // no point in setting the alarm to the minute - nearest 5 mins will do
+      clicks *= 5;
+    }
+    alarmMinute = (alarmMinute / 5) * 5; // make sure we are on a 5 minute boundry
+    lastAlarmUpdate = update;            // store the update time for the speed of rotation timer
+    Serial.print("clicks ");
+    Serial.println(clicks);
+    // just in case we get too many to keep the calculations simple and avoid the time changeing too much in a single increment we can limit it to 45 minute changes.
+    if (clicks > 45)
+    {
+      clicks = 45;
+    }
+    if (clicks < -45)
+    {
+      clicks = -45;
+    }
+    alarmMinute += clicks;
+    encoder.reset();
+    if (alarmMinute > 59)
+    {
+      alarmMinute -= 60;
+      if (++alarmHour > 23)
+      {
+        alarmHour = 0;
+      }
+    }
+    if (alarmMinute < 0)
+    {
+      alarmMinute += 60;
+      if (--alarmHour < 0)
+      {
+        alarmHour = 23;
+      }
+    }
+    Serial.print("Alarm time ");
+    Serial.print(alarmHour);
+    Serial.print(":");
+    Serial.println(alarmMinute);
+  }
+}
+
 void loop()
 {
   signed char pos = encoder.getPosition();
-  if (pos != 0)
+
+  setAlarm(pos);
+  alarm_seven_segment_display(alarmHour, alarmMinute);
+
+  unsigned long endTime = millis();
+  if (endTime < startTime)
   {
-    position += pos;
-    encoder.reset();
-    Serial.println(position);
+    // timer has wrapped around
+    triggerTime = endTime + delayTime; // set the next trigger time
+    startTime = endTime;
+  }
+  if (endTime > triggerTime)
+  {
+    triggerTime = endTime + delayTime; // set the next trigger time
+    startTime = endTime;
+    clock_seven_segment_display();
+
+   
+  }
+}
+
+void check_alarm(int hour, int minute){
+  if(hour==alarmHour){
+    if(minute==alarmMinute){
+    digitalWrite(led, false); //toggle the on-board led
+    }
   }
 
-  delay(1000);
-  clock_seven_segment_display();
-  digitalWrite(led, !digitalRead(led)); //toggle the on-board led
 }
 
 void connect_to_wifi()
@@ -120,10 +203,48 @@ void connect_to_wifi()
 
 void clock_seven_segment_display()
 {
-  int displayValue = 0;
+  
+  clockDisplay.setBrightness(0x0f);
+  int colon = 0;
+  if (digitalRead(led))
+  {
+    colon = 0xff;
+  }
 
-  display.setBrightness(0x0f);
+  if (isWifiConnected())
+  {
+    int hour = timeClient.getHours();
+    int minutes = timeClient.getMinutes();
 
+    check_alarm(hour,minutes);
+
+    // Serial.print(daysOfTheWeek[timeClient.getDay()]);
+    // Serial.print(", ");
+    // Serial.print(hour);
+    // Serial.print(":");
+    // Serial.print(minutes);
+    // Serial.print(":");
+    // Serial.println(timeClient.getSeconds());
+    // Serial.println(timeClient.getFormattedTime());
+  
+    clockDisplay.showNumberDecEx(((hour * 100) + minutes), colon, true);
+  }
+  else
+  {
+    clockDisplay.setSegments(SEG_DASH);
+  }
+}
+
+void alarm_seven_segment_display(uint hour, uint minute)
+{
+  alarmDisplay.setBrightness(0xff);
+  alarmDisplay.showNumberDecEx(((hour * 100) + minute), 0xff, true);
+}
+
+bool connected = false;
+bool isWifiConnected()
+{
+  
   switch (WiFi.status())
   {
   case WL_NO_SSID_AVAIL:
@@ -134,14 +255,14 @@ void clock_seven_segment_display()
     Serial.println(" WL_SCAN_COMPLETED ");
     break;
   case WL_CONNECTED:
-    Serial.println("WL_CONNECTED ");
+    //Serial.println("WL_CONNECTED ");
     if (connected == false)
     {
+      Serial.println("We have just (re) connected so force an update to the NTP time ");
       timeClient.forceUpdate();
       connected = true;
     }
     timeClient.update();
-
     break;
   case WL_CONNECT_FAILED:
     Serial.println("WL_CONNECT_FAILED ");
@@ -165,32 +286,5 @@ void clock_seven_segment_display()
     Serial.println("WL_NO_SHIELD");
     break;
   }
-
-  int colon = 0;
-  if (digitalRead(led))
-  {
-    colon = 0xff;
-  }
-  //display.showNumberDecEx(0, colon, false);
-
-  if (connected == false)
-  {
-    display.setSegments(SEG_DASH);
-  }
-  else
-  {
-    int hour = timeClient.getHours();
-    int minutes = timeClient.getMinutes();
-
-    Serial.print(daysOfTheWeek[timeClient.getDay()]);
-    Serial.print(", ");
-    Serial.print(hour);
-    Serial.print(":");
-    Serial.print(minutes);
-    Serial.print(":");
-    Serial.println(timeClient.getSeconds());
-    Serial.println(timeClient.getFormattedTime());
-    displayValue = (hour * 100) + minutes;
-    display.showNumberDecEx(displayValue, colon, true);
-  }
+  return connected;
 }
