@@ -291,18 +291,16 @@ void loop()
 
 void check_alarm(int hour, int minute)
 {
+  uint8_t alarmState=HIGH;
   if (hour == alarmHour)
   {
     if (minute == alarmMinute || minute == alarmMinute + 1 || minute == alarmMinute + 2 || minute == alarmMinute + 3 || minute == alarmMinute + 4)
     {
-      digitalWrite(led, LOW); //toggle the on-board led
+      alarmState=LOW;
       Serial.print("Alarm is sounding ");
     }
-    else
-    {
-      digitalWrite(led, HIGH); //toggle the on-board led
-    }
   }
+  digitalWrite(led, alarmState); //on-board led is the alarm
 }
 
 void connect_to_wifi()
