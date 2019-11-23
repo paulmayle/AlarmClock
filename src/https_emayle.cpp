@@ -16,8 +16,18 @@
 #include "SSD1306Wire.h" // legacy include: `#include "SSD1306.h"`
 #include "images.h"
 #include <TimeLib.h>
+#include <Time.h>
+#include <Timezone.h>
 #include "OLEDDisplayUi.h"
 #include "wifi_credentials.h"
+extern "C"
+{
+#include "user_interface.h"
+}
+
+os_timer_t myTimer;
+
+bool soundAlarm = false;
 
 #define ENCODER_PIN1 D7
 #define ENCODER_INT1 digitalPinToInterrupt(ENCODER_PIN1)
@@ -102,9 +112,12 @@ OLEDDisplayUi ui(&display);
 
 int screenW = 128;
 int screenH = 64;
-int clockCenterX = screenW / 2;
+int clockCenterX = screenW / 2 - 32;
 int clockCenterY = ((screenH - 16) / 2) + 16; // top yellow part is 16 px height
 int clockRadius = 23;
+
+int oledCenterX = screenW / 2;
+int oledCenterY = ((screenH - 16) / 2) + 16; // top yellow part is 16 px height
 
 // This array keeps function pointers to all frames
 // frames are the single views that slide in
@@ -116,6 +129,77 @@ int frameCount = 2;
 // Overlays are statically drawn on top of a frame eg. a clock
 OverlayCallback overlays[] = {clockOverlay};
 int overlaysCount = 1;
+
+// // This array keeps function pointers to all frames
+// // frames are the single views that slide in
+// FrameCallback frames[] = {analogClockFrame, digitalClockFrame};
+
+// // how many frames are there?
+// int frameCount = 2;
+
+// // Overlays are statically drawn on top of a frame eg. a clock
+// OverlayCallback overlays[] = {clockOverlay};
+// int overlaysCount = 1;
+
+// ================================= Date stuff =========================
+String date;
+String t;
+const char *days[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+const char *months[] = {"January", "February", "March", "April", "May", "June", "July", "August", "Sepember", "October", "November", "December"};
+
+
+// timer interupt // start of timerCallback
+void timerCallback(void *pArg)
+{
+
+  if (soundAlarm)
+  {
+    digitalWrite(led, !digitalRead(led)); //on-board led is the alarm
+  }
+
+} // End of timerCallback
+
+void user_init(void)
+{
+  /*
+  os_timer_setfn - Define a function to be called when the timer fires
+
+void os_timer_setfn(
+      os_timer_t *pTimer,
+      os_timer_func_t *pFunction,
+      void *pArg)
+
+Define the callback function that will be called when the timer reaches zero. The pTimer parameters is a pointer to the timer control structure.
+
+The pFunction parameters is a pointer to the callback function.
+
+The pArg parameter is a value that will be passed into the called back function. The callback function should have the signature:
+void (*functionName)(void *pArg)
+
+The pArg parameter is the value registered with the callback function.
+*/
+
+  os_timer_setfn(&myTimer, timerCallback, NULL);
+
+  /*
+      os_timer_arm -  Enable a millisecond granularity timer.
+
+void os_timer_arm(
+      os_timer_t *pTimer,
+      uint32_t milliseconds,
+      bool repeat)
+
+Arm a timer such that is starts ticking and fires when the clock reaches zero.
+
+The pTimer parameter is a pointed to a timer control structure.
+The milliseconds parameter is the duration of the timer measured in milliseconds. The repeat parameter is whether or not the timer will restart once it has reached zero.
+
+*/
+
+  os_timer_arm(&myTimer, 1, true);
+} // End of user_init
+
+//==================================================================================
 
 //============================== END OLED ================================================
 
@@ -155,12 +239,13 @@ void setup()
   ui.setTargetFPS(10);
 
   // Customize the active and inactive symbol
- 
+
   ui.disableAllIndicators();
 
-  
-  ui.disableAutoTransition();
-  ui.transitionToFrame(1);
+  // You can change the transition that is used
+  // SLIDE_LEFT, SLIDE_RIGHT, SLIDE_UP, SLIDE_DOWN
+  ui.setFrameAnimation(SLIDE_LEFT);
+
   // Add frames
   ui.setFrames(frames, frameCount);
 
@@ -170,7 +255,18 @@ void setup()
   // Initialising the UI will init the display too.
   ui.init();
 
+  // ============== Only use single screen on OLED ================
+  ui.disableAutoTransition();
+  ui.transitionToFrame(0);
+  // Add frames
+  
+
   display.flipScreenVertically();
+
+  //digitalWrite(led, LOW); //on-board led is the alarm
+
+  // timer
+  user_init();
 }
 
 // Call tick on every change interrupt
@@ -252,10 +348,6 @@ void setAlarm(int clicks)
   }
 }
 
-void saveAlarmTime(int time)
-{
-}
-
 void loop()
 {
   signed char pos = encoder.getPosition();
@@ -287,20 +379,26 @@ void loop()
     // time budget.
     delay(remainingTimeBudget);
   }
+
+  yield();
 }
 
 void check_alarm(int hour, int minute)
 {
-  uint8_t alarmState=HIGH;
-  if (hour == alarmHour)
+  uint8_t alarmState = HIGH;
+  if (hour == alarmHour && (minute == alarmMinute || minute == alarmMinute + 1 || minute == alarmMinute + 2 || minute == alarmMinute + 3 || minute == alarmMinute + 4))
   {
-    if (minute == alarmMinute || minute == alarmMinute + 1 || minute == alarmMinute + 2 || minute == alarmMinute + 3 || minute == alarmMinute + 4)
-    {
-      alarmState=LOW;
-      Serial.print("Alarm is sounding ");
-    }
+    alarmState = LOW;
+    Serial.print("Alarm is sounding ");
+    soundAlarm = true;
   }
-  digitalWrite(led, alarmState); //on-board led is the alarm
+  else
+  {
+    soundAlarm = false;
+    digitalWrite(led, HIGH);
+  }
+
+  //digitalWrite(led, alarmState); //on-board led is the alarm
 }
 
 void connect_to_wifi()
@@ -318,6 +416,7 @@ void connect_to_wifi()
   }
 }
 
+bool blankTillWiFi = true;
 bool colon = false;
 void clock_seven_segment_display()
 {
@@ -325,31 +424,101 @@ void clock_seven_segment_display()
   clockDisplay.setBrightness(0x0f);
   colon = !colon;
 
+  int hour = timeClient.getHours();
+  int minutes = timeClient.getMinutes();
+  int secs = timeClient.getSeconds();
+
   if (isWifiConnected())
   {
-    int hour = timeClient.getHours();
-    int minutes = timeClient.getMinutes();
-    int secs = timeClient.getSeconds();
-
+    blankTillWiFi = false;
     check_alarm(hour, minutes);
-
     setTime(hour, minutes, timeClient.getSeconds(), timeClient.getDay(), 1, 2019);
-
-    // Serial.print(daysOfTheWeek[timeClient.getDay()]);
-    // Serial.print(", ");
-    // Serial.print(hour);
-    // Serial.print(":");
-    // Serial.print(minutes);
-    // Serial.print(":");
-    // Serial.println(timeClient.getSeconds());
-    // Serial.println(timeClient.getFormattedTime());
-
     clockDisplay.showNumberDecEx(((hour * 100) + minutes), colon ? 0xff : 0x00, true);
   }
   else
   {
-    clockDisplay.setSegments(SEG_DASH);
+    // if we just booted but haven't get got the correct time show dashes
+    if (blankTillWiFi)
+    {
+      clockDisplay.setSegments(SEG_DASH);
+    }
+    else
+    {
+      // we did have the correct time but lost wiFi so keep displaying it, but stop flashing the colon
+      colon = true;
+      check_alarm(hour, minutes);
+      setTime(hour, minutes, timeClient.getSeconds(), timeClient.getDay(), 1, 2019);
+      clockDisplay.showNumberDecEx(((hour * 100) + minutes), colon ? 0xff : 0x00, true);
+    }
   }
+}
+
+int lastSeconds = 0;
+void digitalClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
+{
+  date = ""; // clear the variables
+  t = "";
+  String timenow = String(hour()) + ":" + twoDigits(minute()) + ":" + twoDigits(second());
+  // display->setTextAlignment(TEXT_ALIGN_CENTER);
+  // display->setFont(ArialMT_Plain_24);
+  // display->drawString(clockCenterX + x, clockCenterY + y - 24, timenow);
+  //displayDateOled();
+
+  unsigned long epochTime = timeClient.getEpochTime();
+
+  // convert received time stamp to time_t object
+  time_t local, utc;
+  utc = epochTime;
+
+  // Then convert the UTC UNIX timestamp to local time
+  TimeChangeRule usPDT = {"PDT", Second, Sun, Mar, 2, -420}; //UTC - 7 hours - change this as needed
+  TimeChangeRule usPST = {"PST", First, Sun, Nov, 2, -480};  //UTC - 8 hours - change this as needed
+  Timezone usPacific(usPDT, usPST);
+  local = usPacific.toLocal(utc);
+
+  // now format the Time variables into strings with proper names for month, day etc
+  date += days[weekday(local) - 1];
+  date += ", ";
+  date += months[month(local) - 1];
+  date += " ";
+  date += day(local);
+  date += ", ";
+  date += year(local);
+
+  // format the time to 12-hour format with AM/PM and no seconds
+  t += hour(local);
+  t += ":";
+  if (minute(local) < 10) // add a zero if minute is under 10
+    t += "0";
+  t += minute(local);
+
+  // Display the date and time
+  // Serial.println("");
+  // Serial.print("Local date: ");
+  // Serial.print(date);
+  // Serial.println("");
+  // Serial.print("Local time: ");
+  // Serial.print(t);
+  // Serial.println("");
+
+  display->setTextAlignment(TEXT_ALIGN_CENTER);
+  display->setFont(ArialMT_Plain_10);
+  display->drawString(oledCenterX + x, oledCenterY + y - 16, t);
+  display->drawString(oledCenterX + x, oledCenterY + y, date);
+
+  display->setTextAlignment(TEXT_ALIGN_CENTER);
+  display->setFont(ArialMT_Plain_16);
+  display->drawString(oledCenterX + x, 0, timenow);
+  // display->drawString(oledCenterX + x, oledCenterY + y - 32, timenow);
+
+  // print the date and time on the OLED
+  // display->clear();
+  // display->setTextAlignment(TEXT_ALIGN_CENTER);
+  // display->setFont(ArialMT_Plain_24);
+  // display->drawStringMaxWidth(64, 10, 128, t);
+  // display->setFont(ArialMT_Plain_10);
+  // display->drawStringMaxWidth(64, 38, 128, date);
+  // display->display();
 }
 
 void alarm_seven_segment_display(uint hour, uint minute)
@@ -468,19 +637,56 @@ void analogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x
   y3 = (clockCenterY - (cos(angle) * (clockRadius - (clockRadius / 2))));
   display->drawLine(clockCenterX + x, clockCenterY + y, x3 + x, y3 + y);
 
-  // digital display
-  String timenow = String(hour()) + ":" + twoDigits(minute()) + ":" + twoDigits(second());
+ 
+
+  date = ""; // clear the variables
+  t = "";
+
+  unsigned long epochTime = timeClient.getEpochTime();
+
+  // convert received time stamp to time_t object
+  time_t local, utc;
+  utc = epochTime;
+
+  // Then convert the UTC UNIX timestamp to local time
+  TimeChangeRule usPDT = {"PDT", Second, Sun, Mar, 2, -420}; //UTC - 7 hours - change this as needed
+  TimeChangeRule usPST = {"PST", First, Sun, Nov, 2, -480};  //UTC - 8 hours - change this as needed
+  Timezone usPacific(usPDT, usPST);
+  local = usPacific.toLocal(utc);
+
+  // now format the Time variables into strings with proper names for month, day etc
+  String displayWeekDay = days[weekday(local) - 1];
+  String displayMonth = months[month(local) - 1] ;
+  displayMonth +=  " " + day(local);
+  String displayDate = "";
+  displayDate += day(local);
+  String displayYear = "" ;
+  displayYear += year(local);
+
+  t += hour(local);
+  t += ":";
+  if (minute(local) < 10) // add a zero if minute is under 10
+    t += "0";
+  t += minute(local);
+   t += ":";
+  if(second(local) < 10)
+    t += "0";
+  t += second(local);
+  
+
+   // digital display
+  //String timenow = String(hour()) + ":" + twoDigits(minute()) + ":" + twoDigits(second());
   display->setTextAlignment(TEXT_ALIGN_CENTER);
   display->setFont(ArialMT_Plain_16);
-  display->drawString(clockCenterX + x, 0, timenow);
-}
-
-void digitalClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
-{
-  String timenow = String(hour()) + ":" + twoDigits(minute()) + ":" + twoDigits(second());
-  display->setTextAlignment(TEXT_ALIGN_CENTER);
-  display->setFont(ArialMT_Plain_24);
-  display->drawString(clockCenterX + x, clockCenterY + y, timenow);
+  //display->drawString(oledCenterX + x, 0, timenow);
+  // Yellow top bar
+  display->drawString(oledCenterX + x -20 , oledCenterY + y - 40, t);
+  display->drawString(oledCenterX + x + 34, oledCenterY + y - 40, displayDate);
+// blue body
+  display->setFont(ArialMT_Plain_10);
+  display->drawString(oledCenterX + x + 28, oledCenterY + y - 20, displayMonth );
+  display->drawString(oledCenterX + x  + 28, oledCenterY + y - 5 , displayWeekDay);
+  display->drawString(oledCenterX + x + 28 , oledCenterY + y + 10, displayYear);
 }
 
 // static uint8_t conv2d(const char *p)
