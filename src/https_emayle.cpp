@@ -53,7 +53,9 @@ char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursd
 
 // Define NTP Client to get time
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
+//NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
+// Try it without the timezone offset
+NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
 // Module connection pins (Digital Pins)
 
@@ -92,7 +94,8 @@ String twoDigits(int digits);
 void clockOverlay(OLEDDisplay *display, OLEDDisplayUiState *state);
 void analogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
 void digitalClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
-static uint8_t conv2d(const char *p);
+//static uint8_t conv2d(const char *p);
+time_t getLocalTime();
 
 // ==== END OLED ====
 
@@ -142,11 +145,10 @@ int overlaysCount = 1;
 // int overlaysCount = 1;
 
 // ================================= Date stuff =========================
-String date;
+//String date;
 String t;
 const char *days[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 const char *months[] = {"January", "February", "March", "April", "May", "June", "July", "August", "Sepember", "October", "November", "December"};
-
 
 // timer interupt // start of timerCallback
 void timerCallback(void *pArg)
@@ -259,7 +261,6 @@ void setup()
   ui.disableAutoTransition();
   ui.transitionToFrame(0);
   // Add frames
-  
 
   display.flipScreenVertically();
 
@@ -421,19 +422,21 @@ bool colon = false;
 void clock_seven_segment_display()
 {
 
+  time_t local = getLocalTime();
+
   clockDisplay.setBrightness(0x0f);
   colon = !colon;
 
-  int hour = timeClient.getHours();
-  int minutes = timeClient.getMinutes();
-  int secs = timeClient.getSeconds();
+  int hourT = hour(local);
+  int minutes = minute(local);
+  //int secs = second(local) ;
 
   if (isWifiConnected())
   {
     blankTillWiFi = false;
-    check_alarm(hour, minutes);
-    setTime(hour, minutes, timeClient.getSeconds(), timeClient.getDay(), 1, 2019);
-    clockDisplay.showNumberDecEx(((hour * 100) + minutes), colon ? 0xff : 0x00, true);
+    check_alarm(hourT, minutes);
+    //setTime(hourT, minutes, timeClient.getSeconds(), timeClient.getDay(), 1, 2019);
+    clockDisplay.showNumberDecEx(((hourT * 100) + minutes), colon ? 0xff : 0x00, true);
   }
   else
   {
@@ -446,9 +449,8 @@ void clock_seven_segment_display()
     {
       // we did have the correct time but lost wiFi so keep displaying it, but stop flashing the colon
       colon = true;
-      check_alarm(hour, minutes);
-      setTime(hour, minutes, timeClient.getSeconds(), timeClient.getDay(), 1, 2019);
-      clockDisplay.showNumberDecEx(((hour * 100) + minutes), colon ? 0xff : 0x00, true);
+      setTime(hourT, minutes, timeClient.getSeconds(), timeClient.getDay(), 1, 2019);
+      clockDisplay.showNumberDecEx(((hourT * 100) + minutes), colon ? 0xff : 0x00, true);
     }
   }
 }
@@ -456,69 +458,37 @@ void clock_seven_segment_display()
 int lastSeconds = 0;
 void digitalClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
 {
-  date = ""; // clear the variables
-  t = "";
-  String timenow = String(hour()) + ":" + twoDigits(minute()) + ":" + twoDigits(second());
+  // time_t local = getLocalTime();
+  // //String timenow = String(hour()) + ":" + twoDigits(minute()) + ":" + twoDigits(second());
+
+  // // now format the Time variables into strings with proper names for month, day etc
+  // date = ""; // clear the variables
+  // date += days[weekday(local) - 1];
+  // date += ", ";
+  // date += months[month(local) - 1];
+  // date += " ";
+  // date += day(local);
+  // date += ", ";
+  // date += year(local);
+
+  // // format the time 24 hour clock
+  // t = ""; // clear the time
+  // if(hour(local) < 10)
+  //   t += "0";
+  // t += hour(local);
+  // t += ":";
+  // if (minute(local) < 10) // add a zero if minute is under 10
+  //   t += "0";
+  // t += minute(local);
+
   // display->setTextAlignment(TEXT_ALIGN_CENTER);
-  // display->setFont(ArialMT_Plain_24);
-  // display->drawString(clockCenterX + x, clockCenterY + y - 24, timenow);
-  //displayDateOled();
-
-  unsigned long epochTime = timeClient.getEpochTime();
-
-  // convert received time stamp to time_t object
-  time_t local, utc;
-  utc = epochTime;
-
-  // Then convert the UTC UNIX timestamp to local time
-  TimeChangeRule usPDT = {"PDT", Second, Sun, Mar, 2, -420}; //UTC - 7 hours - change this as needed
-  TimeChangeRule usPST = {"PST", First, Sun, Nov, 2, -480};  //UTC - 8 hours - change this as needed
-  Timezone usPacific(usPDT, usPST);
-  local = usPacific.toLocal(utc);
-
-  // now format the Time variables into strings with proper names for month, day etc
-  date += days[weekday(local) - 1];
-  date += ", ";
-  date += months[month(local) - 1];
-  date += " ";
-  date += day(local);
-  date += ", ";
-  date += year(local);
-
-  // format the time to 12-hour format with AM/PM and no seconds
-  t += hour(local);
-  t += ":";
-  if (minute(local) < 10) // add a zero if minute is under 10
-    t += "0";
-  t += minute(local);
-
-  // Display the date and time
-  // Serial.println("");
-  // Serial.print("Local date: ");
-  // Serial.print(date);
-  // Serial.println("");
-  // Serial.print("Local time: ");
-  // Serial.print(t);
-  // Serial.println("");
-
-  display->setTextAlignment(TEXT_ALIGN_CENTER);
-  display->setFont(ArialMT_Plain_10);
-  display->drawString(oledCenterX + x, oledCenterY + y - 16, t);
-  display->drawString(oledCenterX + x, oledCenterY + y, date);
-
-  display->setTextAlignment(TEXT_ALIGN_CENTER);
-  display->setFont(ArialMT_Plain_16);
-  display->drawString(oledCenterX + x, 0, timenow);
-  // display->drawString(oledCenterX + x, oledCenterY + y - 32, timenow);
-
-  // print the date and time on the OLED
-  // display->clear();
-  // display->setTextAlignment(TEXT_ALIGN_CENTER);
-  // display->setFont(ArialMT_Plain_24);
-  // display->drawStringMaxWidth(64, 10, 128, t);
   // display->setFont(ArialMT_Plain_10);
-  // display->drawStringMaxWidth(64, 38, 128, date);
-  // display->display();
+  // display->drawString(oledCenterX + x, oledCenterY + y - 16, t);
+  // display->drawString(oledCenterX + x, oledCenterY + y, date);
+
+  // display->setTextAlignment(TEXT_ALIGN_CENTER);
+  // display->setFont(ArialMT_Plain_16);
+  // display->drawString(oledCenterX + x, 0, timenow);
 }
 
 void alarm_seven_segment_display(uint hour, uint minute)
@@ -595,8 +565,28 @@ void clockOverlay(OLEDDisplay *display, OLEDDisplayUiState *state)
 {
 }
 
+time_t getLocalTime()
+{
+
+  unsigned long epochTime = timeClient.getEpochTime();
+
+  // convert received time stamp to time_t object
+  time_t local, utc;
+  utc = epochTime;
+
+  // Then convert the UTC UNIX timestamp to local time
+  TimeChangeRule usPDT = {"PDT", Second, Sun, Mar, 2, -420}; //UTC - 7 hours - change this as needed
+  TimeChangeRule usPST = {"PST", First, Sun, Nov, 2, -480};  //UTC - 8 hours - change this as needed
+  Timezone usPacific(usPDT, usPST);
+  local = usPacific.toLocal(utc);
+  return local;
+}
+
 void analogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
 {
+
+  time_t local = getLocalTime();
+
   //  ui.disableIndicator();
 
   // Draw the clock face
@@ -617,82 +607,62 @@ void analogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x
   }
 
   // display second hand
-  float angle = second() * 6;
+  float angle = second(local) * 6;
   angle = (angle / 57.29577951); //Convert degrees to radians
   int x3 = (clockCenterX + (sin(angle) * (clockRadius - (clockRadius / 5))));
   int y3 = (clockCenterY - (cos(angle) * (clockRadius - (clockRadius / 5))));
   display->drawLine(clockCenterX + x, clockCenterY + y, x3 + x, y3 + y);
   //
   // display minute hand
-  angle = minute() * 6;
+  angle = minute(local) * 6;
   angle = (angle / 57.29577951); //Convert degrees to radians
   x3 = (clockCenterX + (sin(angle) * (clockRadius - (clockRadius / 4))));
   y3 = (clockCenterY - (cos(angle) * (clockRadius - (clockRadius / 4))));
   display->drawLine(clockCenterX + x, clockCenterY + y, x3 + x, y3 + y);
   //
   // display hour hand
-  angle = hour() * 30 + int((minute() / 12) * 6);
+  angle = hour(local) * 30 + int((minute() / 12) * 6);
   angle = (angle / 57.29577951); //Convert degrees to radians
   x3 = (clockCenterX + (sin(angle) * (clockRadius - (clockRadius / 2))));
   y3 = (clockCenterY - (cos(angle) * (clockRadius - (clockRadius / 2))));
   display->drawLine(clockCenterX + x, clockCenterY + y, x3 + x, y3 + y);
 
- 
-
-  date = ""; // clear the variables
-  t = "";
-
-  unsigned long epochTime = timeClient.getEpochTime();
-
-  // convert received time stamp to time_t object
-  time_t local, utc;
-  utc = epochTime;
-
-  // Then convert the UTC UNIX timestamp to local time
-  TimeChangeRule usPDT = {"PDT", Second, Sun, Mar, 2, -420}; //UTC - 7 hours - change this as needed
-  TimeChangeRule usPST = {"PST", First, Sun, Nov, 2, -480};  //UTC - 8 hours - change this as needed
-  Timezone usPacific(usPDT, usPST);
-  local = usPacific.toLocal(utc);
+  
 
   // now format the Time variables into strings with proper names for month, day etc
   String displayWeekDay = days[weekday(local) - 1];
-  String displayMonth = months[month(local) - 1] ;
-  displayMonth +=  " " + day(local);
+  String displayMonth = months[month(local) - 1];
+  displayMonth += " " + day(local);
   String displayDate = "";
   displayDate += day(local);
-  String displayYear = "" ;
+  String displayYear = "";
   displayYear += year(local);
 
+  // format the time 24 hour clock
+  t = ""; // clear the time
+  if (hour(local) < 10)
+    t += "0";
   t += hour(local);
   t += ":";
   if (minute(local) < 10) // add a zero if minute is under 10
     t += "0";
   t += minute(local);
-   t += ":";
-  if(second(local) < 10)
+  t += ":";
+  if (second(local) < 10)
     t += "0";
   t += second(local);
-  
 
-   // digital display
+  // digital display
   //String timenow = String(hour()) + ":" + twoDigits(minute()) + ":" + twoDigits(second());
   display->setTextAlignment(TEXT_ALIGN_CENTER);
   display->setFont(ArialMT_Plain_16);
   //display->drawString(oledCenterX + x, 0, timenow);
   // Yellow top bar
-  display->drawString(oledCenterX + x -20 , oledCenterY + y - 40, t);
+  display->drawString(oledCenterX + x - 20, oledCenterY + y - 40, t);
   display->drawString(oledCenterX + x + 34, oledCenterY + y - 40, displayDate);
-// blue body
+  // blue body
   display->setFont(ArialMT_Plain_10);
-  display->drawString(oledCenterX + x + 28, oledCenterY + y - 20, displayMonth );
-  display->drawString(oledCenterX + x  + 28, oledCenterY + y - 5 , displayWeekDay);
-  display->drawString(oledCenterX + x + 28 , oledCenterY + y + 10, displayYear);
+  display->drawString(oledCenterX + x + 28, oledCenterY + y - 20, displayMonth);
+  display->drawString(oledCenterX + x + 28, oledCenterY + y - 5, displayWeekDay);
+  display->drawString(oledCenterX + x + 28, oledCenterY + y + 10, displayYear);
 }
-
-// static uint8_t conv2d(const char *p)
-// {
-//   uint8_t v = 0;
-//   if ('0' <= *p && *p <= '9')
-//     v = *p - '0';
-//   return 10 * v + *++p - '0';
-// }
