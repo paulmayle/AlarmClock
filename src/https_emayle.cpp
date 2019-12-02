@@ -1,10 +1,4 @@
-/*
- *  This sketch sends data via HTTP GET requests to data.sparkfun.com service.
- *
- *  You need to get streamId and privateKey at data.sparkfun.com and paste them
- *  below. Or just customize this script to talk to other HTTP servers.
- *  ESP8266 Arduino example
- */
+
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <NTPClient.h>
@@ -13,7 +7,7 @@
 #include <pins_arduino.h>
 #include <EEPROM.h>
 #include <EncoderStepCounter.h>
-#include "SSD1306Wire.h" // legacy include: `#include "SSD1306.h"`
+#include "SSD1306Wire.h"
 #include "images.h"
 #include <TimeLib.h>
 #include <Time.h>
@@ -29,41 +23,35 @@ os_timer_t myTimer;
 
 bool soundAlarm = false;
 
-#define ENCODER_PIN1 D7
-#define ENCODER_INT1 digitalPinToInterrupt(ENCODER_PIN1)
+// Module connection pins (Digital Pins)
+#define CLK D0
+#define OLED_CLOCK D1
+#define OLED_DATA D2
+#define LED_CLOCK D3
+#define LED_ONBOARD D4
+#define LED_ALARM D5
 #define ENCODER_PIN2 D6
+#define ENCODER_PIN1 D7
+
+#define ADC A0
+
+#define ENCODER_INT1 digitalPinToInterrupt(ENCODER_PIN1)
 #define ENCODER_INT2 digitalPinToInterrupt(ENCODER_PIN2)
 
+// Store the alarm time in nvram (eeprom simulator)
 #define ALARM_HOURS_STORE 0
 #define ALARM_MINUTE_STORE 1
 
-// We have a status line for messages
+// yellow part of oled uses first 16 pixels
 #define STATUS_X 120 // Centred on this
 #define STATUS_Y 65
 
 // Create instance for one full step encoder
 EncoderStepCounter encoder(ENCODER_PIN1, ENCODER_PIN2);
-// Use the following for half step encoders
-//EncoderStepCounter encoder(ENCODER_PIN1, ENCODER_PIN2, HALF_STEP);
-
-const long utcOffsetInSeconds = (-8 * 60 * 60);
-//For UTC -8.00 : -8 * 60 * 60 : -18000
-
-char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
 // Define NTP Client to get time
 WiFiUDP ntpUDP;
-//NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
-// Try it without the timezone offset
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
-
-// Module connection pins (Digital Pins)
-
-#define led D4
-#define CLK D0
-
-// The amount of time (in milliseconds) between tests
-#define TEST_DELAY 2000
 
 const uint8_t SEG_DONE[] = {
     SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F, // O
@@ -78,38 +66,40 @@ const uint8_t SEG_DASH[] = {
     SEG_G,
     SEG_G};
 
-TM1637Display clockDisplay(CLK, D3);
-TM1637Display alarmDisplay(CLK, D5);
+TM1637Display clockDisplay(CLK, LED_CLOCK);
+TM1637Display alarmDisplay(CLK, LED_ALARM);
 
+// ********  Prototypes *************************
 void connect_to_wifi();
 
 void clock_seven_segment_display();
 void alarm_seven_segment_display(uint hour, uint minute);
-void setAlarm(int clicks);
+void setAlarm();
 bool isWifiConnected();
 void check_alarm(int hour, int minute);
 ICACHE_RAM_ATTR void interrupt();
-// ===== OLED =====
 String twoDigits(int digits);
 void clockOverlay(OLEDDisplay *display, OLEDDisplayUiState *state);
 void analogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
 void digitalClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
-//static uint8_t conv2d(const char *p);
 time_t getLocalTime();
-
-// ==== END OLED ====
 
 unsigned long startTime = 0;
 unsigned long delayTime = 1000; // delay of 1000mS
-unsigned long triggerTime;
+
+unsigned long startAlarmTime = 0;
+unsigned long delayAlarmTimeOn = 50;    // delay of 100mS
+unsigned long delayAlarmTimeOff = 1000; // delay of 100mS
 
 int alarmHour;
 int alarmMinute;
 
+boolean snooze;
+
 //========================OLED DISPALY ======================================
 
 // OLED ===
-SSD1306Wire display(0x3c, D2, D1);
+SSD1306Wire display(0x3c, OLED_DATA, OLED_CLOCK);
 
 OLEDDisplayUi ui(&display);
 
@@ -149,6 +139,7 @@ int overlaysCount = 1;
 String t;
 const char *days[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 const char *months[] = {"January", "February", "March", "April", "May", "June", "July", "August", "Sepember", "October", "November", "December"};
+const char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
 // timer interupt // start of timerCallback
 void timerCallback(void *pArg)
@@ -156,7 +147,7 @@ void timerCallback(void *pArg)
 
   if (soundAlarm)
   {
-    digitalWrite(led, !digitalRead(led)); //on-board led is the alarm
+    //digitalWrite(led, !digitalRead(led)); //on-board led is the alarm
   }
 
 } // End of timerCallback
@@ -215,13 +206,9 @@ void setup()
   attachInterrupt(ENCODER_INT2, interrupt, CHANGE);
   Serial.begin(115200);
   delay(10);
-  pinMode(led, OUTPUT);
+  pinMode(LED_ONBOARD, OUTPUT);
   connect_to_wifi();
-  unsigned long endTime = millis();
-  triggerTime = endTime + delayTime; // set the next trigger time
-  startTime = endTime;
-  // This seems to CRASH it!!
-  // digitalWrite(LED_BUILTIN, HIGH);   // turn the LED on (HIGH is the voltage level)
+
   alarmHour = EEPROM.read(ALARM_HOURS_STORE);
   alarmMinute = EEPROM.read(ALARM_MINUTE_STORE);
   Serial.print("Read hours (");
@@ -264,8 +251,6 @@ void setup()
 
   display.flipScreenVertically();
 
-  //digitalWrite(led, LOW); //on-board led is the alarm
-
   // timer
   user_init();
 }
@@ -279,8 +264,9 @@ ICACHE_RAM_ATTR void interrupt()
 ulong lastAlarmUpdate;
 bool notSaved;
 
-void setAlarm(int clicks)
+void setAlarm()
 {
+  signed char clicks = encoder.getPosition();
   if (clicks != 0)
   {
     ulong update = millis();
@@ -349,57 +335,110 @@ void setAlarm(int clicks)
   }
 }
 
-void loop()
+/**
+ * This will return true once a second, so the colon flasshes at the correct rate.
+ * */
+
+boolean isTimeToUpdateDisplay()
 {
-  signed char pos = encoder.getPosition();
-
-  setAlarm(pos);
-
-  unsigned long endTime = millis();
-  if (endTime < startTime)
+  unsigned long currentTime = millis();
+  if (currentTime < startTime)
   {
     // timer has wrapped around
-    triggerTime = endTime + delayTime; // set the next trigger time
-    startTime = endTime;
+    startTime = currentTime;
   }
-  if (endTime > triggerTime)
+  else
   {
-    triggerTime = endTime + delayTime; // set the next trigger time
-    startTime = endTime;
-    clock_seven_segment_display();
+    if (currentTime > startTime + delayTime)
+    {
+      startTime = currentTime;
+      return true;
+    }
   }
+  return false;
+}
 
+boolean isTimeToBeep()
+{
+
+  unsigned long currentTime = millis();
+  if (currentTime < startAlarmTime)
+  {
+    // timer has wrapped around
+    startAlarmTime = currentTime;
+  }
+  else
+  {
+    if (currentTime > startAlarmTime + delayAlarmTimeOff)
+    {
+      startAlarmTime = currentTime;
+      return true;
+    }
+  }
+  return false;
+}
+
+void loop()
+{
   //-------oled-------
-
   int remainingTimeBudget = ui.update();
-
   if (remainingTimeBudget > 0)
   {
     // You can do some work here
     // Don't do stuff if you are below your
     // time budget.
-    delay(remainingTimeBudget);
-  }
 
-  yield();
+    // read the ADC to determine which buttons are pressed
+    int v = analogRead(ADC);
+    if (v < 50)
+    {
+      // Button pressed
+          Serial.print("button pressed: ");
+
+      snooze = true;
+      soundAlarm=false;
+    }
+    //Serial.print("analogue: ");
+    //Serial.println(v);
+    // see if the user has turned the encoder to set the alarm
+    setAlarm();
+
+    // If a second has elapsed update the time on the 7 segment display
+    if (isTimeToUpdateDisplay())
+      clock_seven_segment_display();
+
+    if (soundAlarm)
+    {
+      if (isTimeToBeep())
+      {
+        digitalWrite(LED_ONBOARD, LOW);
+      }
+      else
+      {
+        digitalWrite(LED_ONBOARD, HIGH);
+      }
+    }
+    else
+    {
+      digitalWrite(LED_ONBOARD, HIGH);
+    }
+
+    // delay(remainingTimeBudget);
+  }
 }
 
 void check_alarm(int hour, int minute)
 {
-  uint8_t alarmState = HIGH;
   if (hour == alarmHour && (minute == alarmMinute || minute == alarmMinute + 1 || minute == alarmMinute + 2 || minute == alarmMinute + 3 || minute == alarmMinute + 4))
   {
-    alarmState = LOW;
-    Serial.print("Alarm is sounding ");
-    soundAlarm = true;
+    if (!snooze)
+      soundAlarm = true;
   }
   else
   {
+    snooze = false;
     soundAlarm = false;
-    digitalWrite(led, HIGH);
   }
-
-  //digitalWrite(led, alarmState); //on-board led is the alarm
 }
 
 void connect_to_wifi()
@@ -626,8 +665,6 @@ void analogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x
   x3 = (clockCenterX + (sin(angle) * (clockRadius - (clockRadius / 2))));
   y3 = (clockCenterY - (cos(angle) * (clockRadius - (clockRadius / 2))));
   display->drawLine(clockCenterX + x, clockCenterY + y, x3 + x, y3 + y);
-
-  
 
   // now format the Time variables into strings with proper names for month, day etc
   String displayWeekDay = days[weekday(local) - 1];
