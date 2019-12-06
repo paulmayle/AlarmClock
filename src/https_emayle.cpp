@@ -80,9 +80,12 @@ void check_alarm(int hour, int minute);
 ICACHE_RAM_ATTR void interrupt();
 String twoDigits(int digits);
 void clockOverlay(OLEDDisplay *display, OLEDDisplayUiState *state);
-void analogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
-void digitalClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
+void dateTimeFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
+void setupFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
 time_t getLocalTime();
+boolean isTimeToUpdateDisplay();
+boolean isTimeToBeep();
+void doSetup();
 
 unsigned long startTime = 0;
 unsigned long delayTime = 1000; // delay of 1000mS
@@ -95,6 +98,17 @@ int alarmHour;
 int alarmMinute;
 
 boolean snooze;
+boolean inSetupMode;
+int menuItem = 0;
+int ledBrightness;
+boolean alarmOff;
+
+enum menuState
+{
+  ALARM_OFF,
+  BRIGHTNESS,
+  EXIT
+};
 
 //========================OLED DISPALY ======================================
 
@@ -114,7 +128,7 @@ int oledCenterY = ((screenH - 16) / 2) + 16; // top yellow part is 16 px height
 
 // This array keeps function pointers to all frames
 // frames are the single views that slide in
-FrameCallback frames[] = {analogClockFrame, digitalClockFrame};
+FrameCallback frames[] = {dateTimeFrame, setupFrame};
 
 // how many frames are there?
 int frameCount = 2;
@@ -125,7 +139,7 @@ int overlaysCount = 1;
 
 // // This array keeps function pointers to all frames
 // // frames are the single views that slide in
-// FrameCallback frames[] = {analogClockFrame, digitalClockFrame};
+// FrameCallback frames[] = {dateTimeFrame, setupFrame};
 
 // // how many frames are there?
 // int frameCount = 2;
@@ -255,6 +269,129 @@ void setup()
   user_init();
 }
 
+void loop()
+{
+  //-------oled-------
+  int remainingTimeBudget = ui.update();
+  if (remainingTimeBudget > 0)
+  {
+    // You can do some work here
+    // Don't do stuff if you are below your
+    // time budget.
+
+    // read the ADC to determine which buttons are pressed
+    int v = analogRead(ADC);
+    if (v < 50)
+    {
+      while (analogRead(ADC) < 50)
+      {
+        delay(20);
+      }
+      delay(100);
+      // Button pressed
+      if (inSetupMode)
+      {
+        switch (menuItem)
+        {
+        case EXIT:
+          menuItem = 0;
+          inSetupMode = false;
+          ui.transitionToFrame(0);
+          break;
+        case BRIGHTNESS:
+          if (ledBrightness == 0)
+          {
+            ledBrightness = 7;
+          }
+          else
+          {
+            ledBrightness = 0;
+          }
+          // Serial.print("Brightness ");
+          // Serial.println(ledBrightness);
+          alarm_seven_segment_display(alarmHour, alarmMinute);
+          break;
+        case ALARM_OFF:
+          alarmOff = !alarmOff;
+          //  Serial.print("Alarm is ");
+          // Serial.println(alarmOff ? "OFF" : "ON");
+          alarm_seven_segment_display(alarmHour, alarmMinute);
+          break;
+        }
+      }
+      else
+      {
+        
+
+        // if the alarm is sounding we can silence it
+        if (soundAlarm)
+        {
+          snooze = true;
+          soundAlarm = false;
+        }
+        else
+        {
+          inSetupMode = true;
+          ui.transitionToFrame(1);
+          menuItem = 0;
+        }
+      }
+    }
+    //Serial.print("analogue: ");
+    //Serial.println(v);
+    // see if the user has turned the encoder to set the alarm
+
+    if (inSetupMode)
+    {
+      // do some setup stuff
+      doSetup();
+    }
+    else
+    {
+      // not in setup mode so just set the alarm time
+      setAlarm();
+    }
+    // If a second has elapsed update the time on the 7 segment display
+    if (isTimeToUpdateDisplay())
+      clock_seven_segment_display();
+
+    if (soundAlarm)
+    {
+      if (isTimeToBeep())
+      {
+        digitalWrite(LED_ONBOARD, LOW);
+      }
+      else
+      {
+        digitalWrite(LED_ONBOARD, HIGH);
+      }
+    }
+    else
+    {
+      digitalWrite(LED_ONBOARD, HIGH);
+    }
+
+    // delay(remainingTimeBudget);
+  }
+}
+
+void doSetup()
+{
+  signed char clicks = encoder.getPosition();
+  if (clicks != 0)
+  {
+    encoder.reset();
+    menuItem += clicks;
+    if (menuItem < 0)
+      menuItem = 0;
+    if (menuItem > 2)
+      menuItem = 2;
+
+    Serial.print("menu ");
+    Serial.println(menuItem);
+  }
+}
+
 // Call tick on every change interrupt
 ICACHE_RAM_ATTR void interrupt()
 {
@@ -269,6 +406,12 @@ void setAlarm()
   signed char clicks = encoder.getPosition();
   if (clicks != 0)
   {
+    encoder.reset();
+    if (alarmOff)
+    {
+      alarm_seven_segment_display(0, 0);
+      return;
+    }
     ulong update = millis();
     notSaved = true;
 
@@ -296,7 +439,7 @@ void setAlarm()
       clicks = -45;
     }
     alarmMinute += clicks;
-    encoder.reset();
+
     if (alarmMinute > 59)
     {
       alarmMinute -= 60;
@@ -378,55 +521,6 @@ boolean isTimeToBeep()
   return false;
 }
 
-void loop()
-{
-  //-------oled-------
-  int remainingTimeBudget = ui.update();
-  if (remainingTimeBudget > 0)
-  {
-    // You can do some work here
-    // Don't do stuff if you are below your
-    // time budget.
-
-    // read the ADC to determine which buttons are pressed
-    int v = analogRead(ADC);
-    if (v < 50)
-    {
-      // Button pressed
-          Serial.print("button pressed: ");
-
-      snooze = true;
-      soundAlarm=false;
-    }
-    //Serial.print("analogue: ");
-    //Serial.println(v);
-    // see if the user has turned the encoder to set the alarm
-    setAlarm();
-
-    // If a second has elapsed update the time on the 7 segment display
-    if (isTimeToUpdateDisplay())
-      clock_seven_segment_display();
-
-    if (soundAlarm)
-    {
-      if (isTimeToBeep())
-      {
-        digitalWrite(LED_ONBOARD, LOW);
-      }
-      else
-      {
-        digitalWrite(LED_ONBOARD, HIGH);
-      }
-    }
-    else
-    {
-      digitalWrite(LED_ONBOARD, HIGH);
-    }
-
-    // delay(remainingTimeBudget);
-  }
-}
-
 void check_alarm(int hour, int minute)
 {
   if (hour == alarmHour && (minute == alarmMinute || minute == alarmMinute + 1 || minute == alarmMinute + 2 || minute == alarmMinute + 3 || minute == alarmMinute + 4))
@@ -463,7 +557,7 @@ void clock_seven_segment_display()
 
   time_t local = getLocalTime();
 
-  clockDisplay.setBrightness(0x0f);
+  clockDisplay.setBrightness(ledBrightness);
   colon = !colon;
 
   int hourT = hour(local);
@@ -487,53 +581,33 @@ void clock_seven_segment_display()
     else
     {
       // we did have the correct time but lost wiFi so keep displaying it, but stop flashing the colon
-      colon = true;
       setTime(hourT, minutes, timeClient.getSeconds(), timeClient.getDay(), 1, 2019);
-      clockDisplay.showNumberDecEx(((hourT * 100) + minutes), colon ? 0xff : 0x00, true);
+      clockDisplay.showNumberDecEx(((hourT * 100) + minutes), 0xff, true);
     }
   }
 }
 
 int lastSeconds = 0;
-void digitalClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
-{
-  // time_t local = getLocalTime();
-  // //String timenow = String(hour()) + ":" + twoDigits(minute()) + ":" + twoDigits(second());
 
-  // // now format the Time variables into strings with proper names for month, day etc
-  // date = ""; // clear the variables
-  // date += days[weekday(local) - 1];
-  // date += ", ";
-  // date += months[month(local) - 1];
-  // date += " ";
-  // date += day(local);
-  // date += ", ";
-  // date += year(local);
+/*
 
-  // // format the time 24 hour clock
-  // t = ""; // clear the time
-  // if(hour(local) < 10)
-  //   t += "0";
-  // t += hour(local);
-  // t += ":";
-  // if (minute(local) < 10) // add a zero if minute is under 10
-  //   t += "0";
-  // t += minute(local);
+This is the OLED Setup screen 
 
-  // display->setTextAlignment(TEXT_ALIGN_CENTER);
-  // display->setFont(ArialMT_Plain_10);
-  // display->drawString(oledCenterX + x, oledCenterY + y - 16, t);
-  // display->drawString(oledCenterX + x, oledCenterY + y, date);
 
-  // display->setTextAlignment(TEXT_ALIGN_CENTER);
-  // display->setFont(ArialMT_Plain_16);
-  // display->drawString(oledCenterX + x, 0, timenow);
-}
+
+*/
 
 void alarm_seven_segment_display(uint hour, uint minute)
 {
-  alarmDisplay.setBrightness(0xff);
-  alarmDisplay.showNumberDecEx(((hour * 100) + minute), 0xff, true);
+  alarmDisplay.setBrightness(ledBrightness);
+  if (!alarmOff)
+  {
+    alarmDisplay.showNumberDecEx(((hour * 100) + minute), 0xff, true);
+  }
+  else
+  {
+    alarmDisplay.setSegments(SEG_DASH);
+  }
 }
 
 bool connected = false;
@@ -602,6 +676,9 @@ String twoDigits(int digits)
 
 void clockOverlay(OLEDDisplay *display, OLEDDisplayUiState *state)
 {
+  //Serial.println("overlay called");
+
+  //display->drawCircle(clockCenterX , clockCenterY , 9);
 }
 
 time_t getLocalTime()
@@ -621,8 +698,46 @@ time_t getLocalTime()
   return local;
 }
 
-void analogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
+void setupFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
 {
+
+  //Serial.println("Setup called");
+  display->setTextAlignment(TEXT_ALIGN_LEFT);
+  display->setFont(ArialMT_Plain_16);
+  display->drawString(0 + x, 0 + y, " Alarm off ");
+  display->drawString(0 + x, 20 + y, " Brightness ");
+  display->drawString(0 + x, 40 + y, " Exit");
+
+  /*
+  Draw the box around the selected menu item
+*/
+
+  int x2 = 0;
+  int y2 = 0;
+  int w = 100;
+  int h = 17;
+
+  switch (menuItem)
+  {
+  case 0:
+    x2 = 0;
+    y2 = 0;
+    break;
+  case 1:
+    x2 = 0;
+    y2 = 20;
+    break;
+  case 2:
+    x2 = 0;
+    y2 = 40;
+    break;
+  }
+  display->drawRect(x2, y2, w, h);
+}
+
+void dateTimeFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
+{
+  //Serial.println("clock display called");
 
   time_t local = getLocalTime();
 
@@ -642,6 +757,19 @@ void analogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x
     int y2 = (clockCenterY - (cos(angle) * clockRadius));
     int x3 = (clockCenterX + (sin(angle) * (clockRadius - (clockRadius / 8))));
     int y3 = (clockCenterY - (cos(angle) * (clockRadius - (clockRadius / 8))));
+    display->drawLine(x2 + x, y2 + y, x3 + x, y3 + y);
+  }
+
+  //hour ticks
+  for (int z = 0; z < 360; z = z + 90)
+  {
+    //Begin at 0° and stop at 360°
+    float angle = z;
+    angle = (angle / 57.29577951); //Convert degrees to radians
+    int x2 = (clockCenterX + (sin(angle) * clockRadius));
+    int y2 = (clockCenterY - (cos(angle) * clockRadius));
+    int x3 = (clockCenterX + (sin(angle) * (clockRadius - (clockRadius / 4))));
+    int y3 = (clockCenterY - (cos(angle) * (clockRadius - (clockRadius / 4))));
     display->drawLine(x2 + x, y2 + y, x3 + x, y3 + y);
   }
 
@@ -669,7 +797,6 @@ void analogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x
   // now format the Time variables into strings with proper names for month, day etc
   String displayWeekDay = days[weekday(local) - 1];
   String displayMonth = months[month(local) - 1];
-  displayMonth += " " + day(local);
   String displayDate = "";
   displayDate += day(local);
   String displayYear = "";
