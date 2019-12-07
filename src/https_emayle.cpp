@@ -359,15 +359,15 @@ void loop()
       // get the encoder selection of the menu item
       int tempSelection = menuSelection;
       menuSelection = getSelection(maxMenuSelection, menuSelection);
-      if (tempSelection != menuSelection)  // the selection has changed
+      if (tempSelection != menuSelection) // the selection has changed
       {
         switch (menuDisplayed)
         {
         case menu::MAIN_MENU:
           break;
         case menu::BRIGHTNESS_MENU:
-          ledBrightness=menuSelection;
-          alarm_seven_segment_display(alarmHour, alarmMinute);  // so update the brightness
+          ledBrightness = menuSelection;
+          alarm_seven_segment_display(alarmHour, alarmMinute); // so update the brightness
           clock_seven_segment_display();
           break;
         }
@@ -453,6 +453,8 @@ void processMenuSelection(int menuSelection)
 void processBrightnessMenu(int menuSelection)
 {
   ledBrightness = menuSelection;
+  menuDisplayed = menu::MAIN_MENU;
+  inSetupMode = false;
   menuDisplayed = menu::MAIN_MENU;
   ui.transitionToFrame(0);
   maxMenuSelection = 2;
