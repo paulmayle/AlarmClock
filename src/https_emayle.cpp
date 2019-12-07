@@ -41,6 +41,8 @@ bool soundAlarm = false;
 // Store the alarm time in nvram (eeprom simulator)
 #define ALARM_HOURS_STORE 0
 #define ALARM_MINUTE_STORE 1
+#define ALARM_STATE_STORE 2
+#define BRIGHTNESS_STORE 3
 
 // yellow part of oled uses first 16 pixels
 #define STATUS_X 120 // Centred on this
@@ -53,10 +55,30 @@ EncoderStepCounter encoder(ENCODER_PIN1, ENCODER_PIN2);
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
-const uint8_t SEG_DONE[] = {
+/* Define the segments 
+
+  AAAAAA
+ F      B 
+ F      B 
+ F      B 
+  GGGGGG
+ E      C
+ E      C
+ E      C
+  DDDDDD  
+*/
+
+const uint8_t SEG_HOLD[] = {
+    SEG_B | SEG_C | SEG_E | SEG_F | SEG_G,         // H
     SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F, // O
-    SEG_D | SEG_E | SEG_F | SEG_G,                 // F
-    SEG_D | SEG_E | SEG_F | SEG_G,                 // F
+    SEG_D | SEG_E | SEG_F,                         // L
+    SEG_B | SEG_C | SEG_D | SEG_E | SEG_G          // d
+};
+
+const uint8_t SEG_OFF[] = {
+    SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F, // O
+    SEG_A | SEG_E | SEG_F | SEG_G,                 // F
+    SEG_A | SEG_E | SEG_F | SEG_G,                 // F
     0                                              //
 };
 
@@ -82,10 +104,21 @@ String twoDigits(int digits);
 void clockOverlay(OLEDDisplay *display, OLEDDisplayUiState *state);
 void dateTimeFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
 void setupFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
+void brightnessFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
+
+void processMenuSelection(int m);
+void processBrightnessMenu(int m);
+void processMainMenu(int m);
+void checkForButtonPress();
+boolean wasButtonPressed();
+
+//*****************************************************
+
 time_t getLocalTime();
 boolean isTimeToUpdateDisplay();
 boolean isTimeToBeep();
-void doSetup();
+int getSelection(int max, int selection);
+void proessMenuSelection();
 
 unsigned long startTime = 0;
 unsigned long delayTime = 1000; // delay of 1000mS
@@ -99,15 +132,23 @@ int alarmMinute;
 
 boolean snooze;
 boolean inSetupMode;
-int menuItem = 0;
+int menuDisplayed = 0;
 int ledBrightness;
 boolean alarmOff;
+boolean settingBrightness;
+boolean buttonPressed;
 
 enum menuState
 {
   ALARM_OFF,
   BRIGHTNESS,
   EXIT
+};
+
+enum menu
+{
+  MAIN_MENU,
+  BRIGHTNESS_MENU
 };
 
 //========================OLED DISPALY ======================================
@@ -128,10 +169,10 @@ int oledCenterY = ((screenH - 16) / 2) + 16; // top yellow part is 16 px height
 
 // This array keeps function pointers to all frames
 // frames are the single views that slide in
-FrameCallback frames[] = {dateTimeFrame, setupFrame};
+FrameCallback frames[] = {dateTimeFrame, setupFrame, brightnessFrame};
 
 // how many frames are there?
-int frameCount = 2;
+int frameCount = 3;
 
 // Overlays are statically drawn on top of a frame eg. a clock
 OverlayCallback overlays[] = {clockOverlay};
@@ -225,6 +266,8 @@ void setup()
 
   alarmHour = EEPROM.read(ALARM_HOURS_STORE);
   alarmMinute = EEPROM.read(ALARM_MINUTE_STORE);
+  alarmOff = EEPROM.read(ALARM_STATE_STORE);
+  ledBrightness = EEPROM.read(BRIGHTNESS_STORE);
   Serial.print("Read hours (");
   Serial.print(alarmHour);
   Serial.print(") and minutes (");
@@ -269,6 +312,8 @@ void setup()
   user_init();
 }
 
+int maxMenuSelection = 2;
+int menuSelection = 0;
 void loop()
 {
   //-------oled-------
@@ -279,50 +324,17 @@ void loop()
     // Don't do stuff if you are below your
     // time budget.
 
-    // read the ADC to determine which buttons are pressed
-    int v = analogRead(ADC);
-    if (v < 50)
+    checkForButtonPress();
+    if (wasButtonPressed())
     {
-      while (analogRead(ADC) < 50)
-      {
-        delay(20);
-      }
-      delay(100);
+
       // Button pressed
       if (inSetupMode)
       {
-        switch (menuItem)
-        {
-        case EXIT:
-          menuItem = 0;
-          inSetupMode = false;
-          ui.transitionToFrame(0);
-          break;
-        case BRIGHTNESS:
-          if (ledBrightness == 0)
-          {
-            ledBrightness = 7;
-          }
-          else
-          {
-            ledBrightness = 0;
-          }
-          // Serial.print("Brightness ");
-          // Serial.println(ledBrightness);
-          alarm_seven_segment_display(alarmHour, alarmMinute);
-          break;
-        case ALARM_OFF:
-          alarmOff = !alarmOff;
-          //  Serial.print("Alarm is ");
-          // Serial.println(alarmOff ? "OFF" : "ON");
-          alarm_seven_segment_display(alarmHour, alarmMinute);
-          break;
-        }
+        processMenuSelection(menuSelection);
       }
       else
       {
-        
-
         // if the alarm is sounding we can silence it
         if (soundAlarm)
         {
@@ -333,7 +345,8 @@ void loop()
         {
           inSetupMode = true;
           ui.transitionToFrame(1);
-          menuItem = 0;
+          maxMenuSelection = 2;
+          menuSelection = 0;
         }
       }
     }
@@ -343,18 +356,37 @@ void loop()
 
     if (inSetupMode)
     {
-      // do some setup stuff
-      doSetup();
+      // get the encoder selection of the menu item
+      int tempSelection = menuSelection;
+      menuSelection = getSelection(maxMenuSelection, menuSelection);
+      if (tempSelection != menuSelection)  // the selection has changed
+      {
+        switch (menuDisplayed)
+        {
+        case menu::MAIN_MENU:
+          break;
+        case menu::BRIGHTNESS_MENU:
+          ledBrightness=menuSelection;
+          alarm_seven_segment_display(alarmHour, alarmMinute);  // so update the brightness
+          clock_seven_segment_display();
+          break;
+        }
+      }
     }
     else
     {
       // not in setup mode so just set the alarm time
       setAlarm();
     }
+
     // If a second has elapsed update the time on the 7 segment display
     if (isTimeToUpdateDisplay())
       clock_seven_segment_display();
 
+    /*
+  If the alarm has been triggered and we want to sound the alarm
+  Check is time to beep to sound intermittently 
+*/
     if (soundAlarm)
     {
       if (isTimeToBeep())
@@ -375,21 +407,109 @@ void loop()
   }
 }
 
-void doSetup()
+boolean wasButtonPressed()
+{
+  if (buttonPressed)
+  {
+    buttonPressed = false;
+    return true;
+  }
+  return false;
+}
+
+void checkForButtonPress()
+{
+
+  // read the ADC to determine which buttons are pressed
+  int v = analogRead(ADC);
+  if (v < 50)
+  {
+    delay(10);
+    while (analogRead(ADC) < 50)
+    {
+      delay(10);
+    }
+    delay(50);
+    // Button pressed
+    buttonPressed = true;
+  }
+}
+
+void processMenuSelection(int menuSelection)
+{
+
+  switch (menuDisplayed)
+  {
+  case menu::MAIN_MENU:
+    processMainMenu(menuSelection);
+    break;
+
+  case menu::BRIGHTNESS_MENU:
+    processBrightnessMenu(menuSelection);
+    break;
+  }
+}
+
+void processBrightnessMenu(int menuSelection)
+{
+  ledBrightness = menuSelection;
+  menuDisplayed = menu::MAIN_MENU;
+  ui.transitionToFrame(0);
+  maxMenuSelection = 2;
+  EEPROM.write(BRIGHTNESS_STORE, ledBrightness);
+  EEPROM.commit();
+}
+
+void processMainMenu(int menuSelection)
+{
+  switch (menuSelection)
+  {
+  case menuState::EXIT:
+    //menuItem = 0;
+    inSetupMode = false;
+    menuDisplayed = menu::MAIN_MENU;
+    ui.transitionToFrame(0);
+    break;
+  case menuState::BRIGHTNESS:
+    ui.transitionToFrame(2);
+    //  settingBrightness = true;
+    maxMenuSelection = 7;
+    menuDisplayed = menu::BRIGHTNESS_MENU;
+
+    break;
+  case menuState::ALARM_OFF:
+    alarmOff = !alarmOff;
+    //  Serial.print("Alarm is ");
+    // Serial.println(alarmOff ? "OFF" : "ON");
+    alarm_seven_segment_display(alarmHour, alarmMinute);
+    EEPROM.write(ALARM_STATE_STORE, alarmOff);
+    EEPROM.commit();
+    menuDisplayed = menu::MAIN_MENU;
+    break;
+  }
+}
+
+int getSelection(int max, int selection)
 {
   signed char clicks = encoder.getPosition();
+
   if (clicks != 0)
   {
+    Serial.print("Incoming selection ");
+    Serial.println(selection);
+    Serial.print("clicks ");
+    Serial.println(clicks);
     encoder.reset();
-    menuItem += clicks;
-    if (menuItem < 0)
-      menuItem = 0;
-    if (menuItem > 2)
-      menuItem = 2;
+    selection += clicks;
+    if (selection < 0)
+      selection = 0;
+    if (selection > max)
+      selection = max;
 
-    Serial.print("menu ");
-    Serial.println(menuItem);
+    Serial.print("Outgoing selection ");
+    Serial.println(selection);
   }
+  return selection;
 }
 
 // Call tick on every change interrupt
@@ -409,9 +529,12 @@ void setAlarm()
     encoder.reset();
     if (alarmOff)
     {
-      alarm_seven_segment_display(0, 0);
-      return;
+      // change to active and save the state
+      alarmOff = false;
+      EEPROM.write(ALARM_STATE_STORE, alarmOff);
+      EEPROM.commit();
     }
+
     ulong update = millis();
     notSaved = true;
 
@@ -576,7 +699,7 @@ void clock_seven_segment_display()
     // if we just booted but haven't get got the correct time show dashes
     if (blankTillWiFi)
     {
-      clockDisplay.setSegments(SEG_DASH);
+      clockDisplay.setSegments(SEG_HOLD);
     }
     else
     {
@@ -606,7 +729,7 @@ void alarm_seven_segment_display(uint hour, uint minute)
   }
   else
   {
-    alarmDisplay.setSegments(SEG_DASH);
+    alarmDisplay.setSegments(SEG_OFF);
   }
 }
 
@@ -717,7 +840,7 @@ void setupFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int1
   int w = 100;
   int h = 17;
 
-  switch (menuItem)
+  switch (menuSelection)
   {
   case 0:
     x2 = 0;
@@ -729,6 +852,70 @@ void setupFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int1
     break;
   case 2:
     x2 = 0;
+    y2 = 40;
+    break;
+  }
+  display->drawRect(x2, y2, w, h);
+}
+
+void brightnessFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
+{
+
+  display->setTextAlignment(TEXT_ALIGN_LEFT);
+  display->setFont(ArialMT_Plain_16);
+  display->drawString(5 + x, 20 + y, "1");
+  display->drawString(25 + x, 20 + y, "2");
+  display->drawString(45 + x, 20 + y, "3");
+  display->drawString(65 + x, 20 + y, "4");
+  display->drawString(5 + x, 40 + y, "5");
+  display->drawString(25 + x, 40 + y, "6");
+  display->drawString(45 + x, 40 + y, "7");
+  display->drawString(65 + x, 40 + y, "8");
+  display->drawString(0 + x, 0 + y, "Brightness");
+
+  /*
+  Draw the box around the selected menu item
+*/
+
+  int x2 = 0;
+  int y2 = 0;
+  int w = 20;
+  int h = 20;
+
+  switch (menuSelection)
+  {
+  case 0:
+    x2 = 0;
+    y2 = 20;
+    break;
+  case 1:
+    x2 = 20;
+    y2 = 20;
+    break;
+  case 2:
+    x2 = 40;
+    y2 = 20;
+    break;
+  case 3:
+    x2 = 60;
+    y2 = 20;
+    break;
+
+    // row 2
+  case 4:
+    x2 = 0;
+    y2 = 40;
+    break;
+  case 5:
+    x2 = 20;
+    y2 = 40;
+    break;
+  case 6:
+    x2 = 40;
+    y2 = 40;
+    break;
+  case 7:
+    x2 = 60;
     y2 = 40;
     break;
   }
