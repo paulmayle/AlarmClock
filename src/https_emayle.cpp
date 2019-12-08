@@ -48,6 +48,8 @@ bool soundAlarm = false;
 #define STATUS_X 120 // Centred on this
 #define STATUS_Y 65
 
+#define BEEP_DELAY 15 // start alarm with a 15 second delay between beeps.
+
 // Create instance for one full step encoder
 EncoderStepCounter encoder(ENCODER_PIN1, ENCODER_PIN2);
 
@@ -67,6 +69,13 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org");
  E      C
   DDDDDD  
 */
+
+const uint8_t SEG_BEEP[] = {
+    SEG_C | SEG_D | SEG_E | SEG_F | SEG_G, // b
+    SEG_A | SEG_D | SEG_E | SEG_F | SEG_G, // E
+    SEG_A | SEG_D | SEG_E | SEG_F | SEG_G, // E
+    SEG_A | SEG_B | SEG_E | SEG_F | SEG_G  // p
+};
 
 const uint8_t SEG_HOLD[] = {
     SEG_B | SEG_C | SEG_E | SEG_F | SEG_G,         // H
@@ -96,6 +105,7 @@ void connect_to_wifi();
 
 void clock_seven_segment_display();
 void alarm_seven_segment_display(uint hour, uint minute);
+void alarm_seven_segment_display_beep();
 void setAlarm();
 bool isWifiConnected();
 void check_alarm(int hour, int minute);
@@ -106,26 +116,27 @@ void dateTimeFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, i
 void setupFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
 void brightnessFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
 
-void processMenuSelection(int m);
-void processBrightnessMenu(int m);
-void processMainMenu(int m);
+void processMenuSelection();
+void processBrightnessMenu();
+void processMainMenu();
 void checkForButtonPress();
 boolean wasButtonPressed();
-
-//*****************************************************
+void exitMenu();
+boolean isTimeToBeep(unsigned long delayAlarmTimeOff);
 
 time_t getLocalTime();
 boolean isTimeToUpdateDisplay();
-boolean isTimeToBeep();
 int getSelection(int max, int selection);
 void proessMenuSelection();
+
+//*****************************************************
 
 unsigned long startTime = 0;
 unsigned long delayTime = 1000; // delay of 1000mS
 
 unsigned long startAlarmTime = 0;
-unsigned long delayAlarmTimeOn = 50;    // delay of 100mS
-unsigned long delayAlarmTimeOff = 1000; // delay of 100mS
+unsigned long delayAlarmTimeOn = 50; // delay of 100mS
+//unsigned long delayAlarmTimeOff = 1000; // delay of 100mS
 
 int alarmHour;
 int alarmMinute;
@@ -199,11 +210,6 @@ const char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "
 // timer interupt // start of timerCallback
 void timerCallback(void *pArg)
 {
-
-  if (soundAlarm)
-  {
-    //digitalWrite(led, !digitalRead(led)); //on-board led is the alarm
-  }
 
 } // End of timerCallback
 
@@ -314,6 +320,7 @@ void setup()
 
 int maxMenuSelection = 2;
 int menuSelection = 0;
+int count = BEEP_DELAY;
 void loop()
 {
   //-------oled-------
@@ -331,7 +338,7 @@ void loop()
       // Button pressed
       if (inSetupMode)
       {
-        processMenuSelection(menuSelection);
+        processMenuSelection();
       }
       else
       {
@@ -387,9 +394,11 @@ void loop()
   If the alarm has been triggered and we want to sound the alarm
   Check is time to beep to sound intermittently 
 */
+
     if (soundAlarm)
     {
-      if (isTimeToBeep())
+
+      if (isTimeToBeep(1000))
       {
         digitalWrite(LED_ONBOARD, LOW);
       }
@@ -400,6 +409,7 @@ void loop()
     }
     else
     {
+      count = BEEP_DELAY;
       digitalWrite(LED_ONBOARD, HIGH);
     }
 
@@ -435,22 +445,25 @@ void checkForButtonPress()
   }
 }
 
-void processMenuSelection(int menuSelection)
+void processMenuSelection()
 {
 
   switch (menuDisplayed)
   {
   case menu::MAIN_MENU:
-    processMainMenu(menuSelection);
+    processMainMenu();
     break;
 
   case menu::BRIGHTNESS_MENU:
-    processBrightnessMenu(menuSelection);
+    processBrightnessMenu();
     break;
   }
 }
 
-void processBrightnessMenu(int menuSelection)
+/*
+Called when button is pressed to save the new LRD brightness level
+*/
+void processBrightnessMenu()
 {
   ledBrightness = menuSelection;
   menuDisplayed = menu::MAIN_MENU;
@@ -462,20 +475,26 @@ void processBrightnessMenu(int menuSelection)
   EEPROM.commit();
 }
 
-void processMainMenu(int menuSelection)
+void exitMenu()
+{
+  inSetupMode = false;
+  menuDisplayed = menu::MAIN_MENU;
+  ui.transitionToFrame(0);
+}
+
+void processMainMenu()
 {
   switch (menuSelection)
   {
   case menuState::EXIT:
     //menuItem = 0;
-    inSetupMode = false;
-    menuDisplayed = menu::MAIN_MENU;
-    ui.transitionToFrame(0);
+    exitMenu();
     break;
   case menuState::BRIGHTNESS:
     ui.transitionToFrame(2);
     //  settingBrightness = true;
     maxMenuSelection = 7;
+    menuSelection = ledBrightness;
     menuDisplayed = menu::BRIGHTNESS_MENU;
 
     break;
@@ -486,7 +505,8 @@ void processMainMenu(int menuSelection)
     alarm_seven_segment_display(alarmHour, alarmMinute);
     EEPROM.write(ALARM_STATE_STORE, alarmOff);
     EEPROM.commit();
-    menuDisplayed = menu::MAIN_MENU;
+    exitMenu();
+
     break;
   }
 }
@@ -586,7 +606,14 @@ void setAlarm()
     Serial.print(":");
     Serial.println(alarmMinute);
   }
-  alarm_seven_segment_display(alarmHour, alarmMinute);
+  if (soundAlarm)
+  {
+    alarm_seven_segment_display_beep();
+  }
+  else
+  {
+    alarm_seven_segment_display(alarmHour, alarmMinute);
+  }
 
   if (notSaved && millis() > lastAlarmUpdate + 20000)
   {
@@ -626,7 +653,7 @@ boolean isTimeToUpdateDisplay()
   return false;
 }
 
-boolean isTimeToBeep()
+boolean isTimeToBeep(unsigned long delayAlarmTimeOff)
 {
 
   unsigned long currentTime = millis();
@@ -637,8 +664,17 @@ boolean isTimeToBeep()
   }
   else
   {
-    if (currentTime > startAlarmTime + delayAlarmTimeOff)
+    if (count == BEEP_DELAY)
     {
+      --count;
+      startAlarmTime = currentTime;
+      return true;
+    }
+
+    if (currentTime > startAlarmTime + (delayAlarmTimeOff * count))
+    {
+      if (--count < 1)
+        count = 1;
       startAlarmTime = currentTime;
       return true;
     }
@@ -650,7 +686,7 @@ void check_alarm(int hour, int minute)
 {
   if (hour == alarmHour && (minute == alarmMinute || minute == alarmMinute + 1 || minute == alarmMinute + 2 || minute == alarmMinute + 3 || minute == alarmMinute + 4))
   {
-    if (!snooze)
+    if (!snooze && !alarmOff)
       soundAlarm = true;
   }
   else
@@ -682,7 +718,15 @@ void clock_seven_segment_display()
 
   time_t local = getLocalTime();
 
-  clockDisplay.setBrightness(ledBrightness);
+  if (soundAlarm)
+  {
+    clockDisplay.setBrightness(7);
+  }
+  else
+  {
+    clockDisplay.setBrightness(ledBrightness);
+  }
+
   colon = !colon;
 
   int hourT = hour(local);
@@ -732,6 +776,19 @@ void alarm_seven_segment_display(uint hour, uint minute)
   else
   {
     alarmDisplay.setSegments(SEG_OFF);
+  }
+}
+
+void alarm_seven_segment_display_beep()
+{
+  alarmDisplay.setBrightness(7);
+  if (colon)
+  {
+    alarmDisplay.setSegments(SEG_BEEP);
+  }
+  else
+  {
+    alarmDisplay.clear();
   }
 }
 
@@ -829,7 +886,14 @@ void setupFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int1
   //Serial.println("Setup called");
   display->setTextAlignment(TEXT_ALIGN_LEFT);
   display->setFont(ArialMT_Plain_16);
-  display->drawString(0 + x, 0 + y, " Alarm off ");
+  if (alarmOff)
+  {
+    display->drawString(0 + x, 0 + y, " Alarm ON ");
+  }
+  else
+  {
+    display->drawString(0 + x, 0 + y, " Alarm OFF ");
+  }
   display->drawString(0 + x, 20 + y, " Brightness ");
   display->drawString(0 + x, 40 + y, " Exit");
 
