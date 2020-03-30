@@ -85,6 +85,14 @@ const uint8_t SEG_HOLD[] = {
 };
 
 const uint8_t SEG_OFF[] = {
+    0,                                             //
+    SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F, // O
+    SEG_A | SEG_E | SEG_F | SEG_G,                 // F
+    SEG_A | SEG_E | SEG_F | SEG_G                 // F
+    
+};
+
+const uint8_t SEG_OFF_LJ[] = {
     SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F, // O
     SEG_A | SEG_E | SEG_F | SEG_G,                 // F
     SEG_A | SEG_E | SEG_F | SEG_G,                 // F
@@ -122,7 +130,8 @@ void processMainMenu();
 void checkForButtonPress();
 boolean wasButtonPressed();
 void exitMenu();
-boolean isTimeToBeep(unsigned long delayAlarmTimeOff);
+boolean isTimeToBeep(unsigned long delayAlarmTimeOff); // old version 
+boolean isTimeToBeep();
 
 time_t getLocalTime();
 boolean isTimeToUpdateDisplay();
@@ -398,7 +407,7 @@ void loop()
     if (soundAlarm)
     {
 
-      if (isTimeToBeep(1000))
+      if (isTimeToBeep())
       {
         digitalWrite(LED_ONBOARD, LOW);
       }
@@ -468,7 +477,7 @@ void processBrightnessMenu()
   ledBrightness = menuSelection;
   menuDisplayed = menu::MAIN_MENU;
   inSetupMode = false;
-  menuDisplayed = menu::MAIN_MENU;
+  //menuDisplayed = menu::MAIN_MENU;
   ui.transitionToFrame(0);
   maxMenuSelection = 2;
   EEPROM.write(BRIGHTNESS_STORE, ledBrightness);
@@ -653,8 +662,90 @@ boolean isTimeToUpdateDisplay()
   return false;
 }
 
+/* 
+This version replaced the version that takes a delay value
+We already know that it is time to sound the alarm at this point - we are just deciding if we should shoind the beep - of is this the quiet time between beeps
+To sound a 'humane' beep we start slow and build up
+ */
+
+boolean soundedThisPeriod=false;
+boolean isTimeToBeep(){
+
+  boolean soundTheAlarm=false;
+  time_t local = getLocalTime();
+  int hours = hour(local);
+  int minutes = minute(local);
+  int seconds = second(local);
+
+  int timeSinceStart=minutes-alarmMinute;  // get the time that the alarm has been sounding from 0 to 5 minutes
+
+
+  switch(timeSinceStart){
+    // minites 1 and 2
+      case 0 :
+      case 1 :
+      if(seconds>=0 && seconds <10){    // give ourselves a 10 second window to sound the alarm in case the wifi call is blocking 
+        if(!soundedThisPeriod){
+        soundTheAlarm=true;
+      }
+        soundedThisPeriod=true;
+      }else{
+        soundedThisPeriod=false;
+      }
+      break;
+      // minute 3
+      case 2 :
+      if((seconds>=0 && seconds <10) || (seconds==15 && seconds <25)||(seconds==30 && seconds <40)|| (seconds==45 && seconds <55) ){
+        if(!soundedThisPeriod){
+        soundTheAlarm=true;
+      }
+        soundedThisPeriod=true;
+      }else{
+        soundedThisPeriod=false;
+      }
+      break;
+      // minute 4
+      case 3 :
+       if((seconds % 5) ==0 ){    // sound every 5 seconds 
+        if(!soundedThisPeriod){
+        soundTheAlarm=true;
+      }
+        soundedThisPeriod=true;
+      }else{
+        soundedThisPeriod=false;
+      }
+      break;
+      // minute 5 is the last chance to ramp it up!
+      case 4 :
+
+       if((seconds % 2) == 0 && seconds < 20  ){    // sound every 2 seconds . for 10 seconds
+        if(!soundedThisPeriod){
+        soundTheAlarm=true;
+      }
+        soundedThisPeriod=true;
+      }else{
+        soundedThisPeriod=false;
+      }
+
+
+     if(seconds >= 30 && seconds <=35 ){    // final attempt 5 seconds solid on
+        soundTheAlarm=true;
+      }else{
+        soundedThisPeriod=false;
+      }
+     
+      break;
+      
+    }
+  
+  return soundTheAlarm;
+
+}
+
 boolean isTimeToBeep(unsigned long delayAlarmTimeOff)
 {
+
+  
 
   unsigned long currentTime = millis();
   if (currentTime < startAlarmTime)
@@ -682,11 +773,15 @@ boolean isTimeToBeep(unsigned long delayAlarmTimeOff)
   return false;
 }
 
+/*
+Should be called every second from the depilay time update
+*/
 void check_alarm(int hour, int minute)
 {
   if (hour == alarmHour && (minute == alarmMinute || minute == alarmMinute + 1 || minute == alarmMinute + 2 || minute == alarmMinute + 3 || minute == alarmMinute + 4))
   {
     if (!snooze && !alarmOff)
+    // set the sound alarm flag. This doesn't mean the alarm will acutally sound, just that it is within the 5 minute sound period
       soundAlarm = true;
   }
   else
@@ -711,6 +806,12 @@ void connect_to_wifi()
   }
 }
 
+
+/**
+ * Called every second to update the display and check the alarm
+ *
+ */
+
 bool blankTillWiFi = true;
 bool colon = false;
 void clock_seven_segment_display()
@@ -731,14 +832,15 @@ void clock_seven_segment_display()
 
   int hourT = hour(local);
   int minutes = minute(local);
-  //int secs = second(local) ;
+ 
+
+  bool showLeadingZero=(hourT==0);
 
   if (isWifiConnected())
   {
     blankTillWiFi = false;
     check_alarm(hourT, minutes);
-    //setTime(hourT, minutes, timeClient.getSeconds(), timeClient.getDay(), 1, 2019);
-    clockDisplay.showNumberDecEx(((hourT * 100) + minutes), colon ? 0xff : 0x00, true);
+    clockDisplay.showNumberDecEx(((hourT * 100) + minutes), colon ? 0xff : 0x00, showLeadingZero);
   }
   else
   {
@@ -751,7 +853,7 @@ void clock_seven_segment_display()
     {
       // we did have the correct time but lost wiFi so keep displaying it, but stop flashing the colon
       setTime(hourT, minutes, timeClient.getSeconds(), timeClient.getDay(), 1, 2019);
-      clockDisplay.showNumberDecEx(((hourT * 100) + minutes), 0xff, true);
+      clockDisplay.showNumberDecEx(((hourT * 100) + minutes), 0xff, showLeadingZero);
     }
   }
 }
@@ -769,9 +871,10 @@ This is the OLED Setup screen
 void alarm_seven_segment_display(uint hour, uint minute)
 {
   alarmDisplay.setBrightness(ledBrightness);
+  bool showLeadingZero=(hour==0);
   if (!alarmOff)
   {
-    alarmDisplay.showNumberDecEx(((hour * 100) + minute), 0xff, true);
+    alarmDisplay.showNumberDecEx(((hour * 100) + minute), 0xff, showLeadingZero);
   }
   else
   {
